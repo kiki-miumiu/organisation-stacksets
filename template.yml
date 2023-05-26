@@ -1,0 +1,45 @@
+---
+Description: >
+  The AWS CloudFormation template for Organisation Stackset
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Parameters:
+  EnvironmentType:
+    Type: String
+    Description: Environment Type of the deployment e.g. prod, nonp
+    AllowedPattern: .+
+  OrganisationID:
+    Type: CommaDelimitedList
+    Description: List of OUs
+
+Resources:
+  IAMRoleStackset:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub iam-role-${EnvironmentType}
+      Description: Organisation stackset for IAM Role
+      PermissionModel: SERVICE_MANAGED
+      CallAs: DELEGATED_ADMIN
+      AutoDeployment:
+        Enabled: true
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_NAMED_IAM
+      Parameters:
+        - ParameterKey: EnvironmentType
+          ParameterValue: !Ref EnvironmentType
+      StackInstancesGroup:
+        - DeploymentTargets:
+            OrganizationalUnitIds: !Ref OrganisationID
+          Regions:
+            - ap-southeast-2
+      TemplateURL: ./cloudformation/iam-role-template.yml
+      ManagedExecution:
+        Active: true
+      OperationPreferences:
+        MaxConcurrentCount: 10
+        FailureToleranceCount: 9
+      Tags:
+        - Key: Owner
+          Value: Platform

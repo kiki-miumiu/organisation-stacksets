@@ -1,0 +1,25 @@
+---
+Description: >-
+  The AWS CloudFormation template for cross account role
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  PlatformDevOpsAccountId:
+    Default: 737281668096
+    Description: DevOps Account Id to enable role trust relationship
+    Type: String
+
+Resources:
+  PlatformDevOpsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: PlatformDevOpsRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${PlatformDevOpsAccountId}:root
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/ReadOnlyAccess'
