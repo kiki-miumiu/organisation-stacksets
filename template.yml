@@ -4,6 +4,11 @@ Description: >
 AWSTemplateFormatVersion: 2010-09-09
 Transform: AWS::Serverless-2016-10-31
 Parameters:
+  Owner:
+    Description: An owner's login or team
+    Type: String
+    AllowedPattern: ".+"
+    Default: Platform
   EnvironmentType:
     Type: String
     Description: Environment Type of the deployment e.g. prod, nonp
@@ -42,4 +47,4 @@ Resources:
         FailureToleranceCount: 9
       Tags:
         - Key: Owner
-          Value: Platform
+          Value: !Ref Owner

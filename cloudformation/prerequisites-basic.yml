@@ -1,0 +1,189 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  organisation-stackset prerequisite stack
+  AWS CloudFormation Template for Prerequisites of organisation-stacksets
+Parameters:
+  EnvironmentType:
+    Type: String
+  Owner:
+    Description: An owner's login or team
+    Type: String
+    AllowedPattern: ".+"
+    Default: CNS
+Resources:
+  APPKMS:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: >
+        Encryption key for application
+      Enabled: true
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: "AccessToKey"
+        Statement:
+          - Sid: Grant full access to build role
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:role/AdministratorRole
+            Action:
+              - "kms:*"
+            Resource: "*"
+          - Sid: Allow use of key for Cloudwatch events DLQ and SNS
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:root
+              Service:
+                - sns.amazonaws.com
+                - sqs.amazonaws.com
+                - events.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:GenerateDataKey*
+              - kms:ReEncrypt*
+            Resource: "*"
+  APPKMSAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/app-${EnvironmentType}
+      TargetKeyId: !Ref APPKMS
+
+  APPKMSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/APP/APPKMSArn-${EnvironmentType}"
+      Type: String
+      Value: !GetAtt APPKMS.Arn
+      Tags:
+        Owner: !Ref Owner
+        Environment: !Ref EnvironmentType
+
+  ##########################################
+  # Deployment bucket for cicd
+  ##########################################
+
+  CodePipelineArtifactStoreBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'codepipeline-${AWS::Region}-${AWS::AccountId}-${EnvironmentType}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'aws:kms'
+              KMSMasterKeyID: !Ref APPKMS
+      Tags:
+        - Key: Owner
+          Value: !Ref Owner
+
+  CodePipelineArtifactStoreBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CodePipelineArtifactStoreBucket
+      PolicyDocument:
+        Statement:
+          - Sid: 'DenyHTTPTraffic'
+            Effect: 'Deny'
+            Principal: '*'
+            Action: 's3:*'
+            Resource: !Sub '${CodePipelineArtifactStoreBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  CodePipelineArtifactStoreBucketSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${Owner}/resources/cp/bucket_name-${EnvironmentType}"
+      Type: String
+      Value: !Ref CodePipelineArtifactStoreBucket
+      Tags:
+        Owner: !Ref Owner
+        Environment: !Ref EnvironmentType
+
+  PurgeObjectsInCodePipelineArtifactStoreBucket:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !GetAtt PurgeAllObjects.Arn
+      BucketName: !Ref CodePipelineArtifactStoreBucket
+
+  ##########################################
+  # Purge all Objects in a S3 Bucket
+  ##########################################
+  PurgeAllObjectsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: S3
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject*
+                Resource: !Sub '${CodePipelineArtifactStoreBucket.Arn}/*'
+        - PolicyName: KMS
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:Decrypt
+                Resource:
+                  - !Ref S3KeyArn
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+  PurgeAllObjects:
+    Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W58
+            reason: This function does not need to have logging.
+          - id: W92
+            reason: ReservedConcurrentExecutions is not essential
+    Properties:
+      Handler: index.handler
+      Runtime: python3.9
+      Timeout: 900
+      Role: !GetAtt PurgeAllObjectsRole.Arn
+      Code:
+        ZipFile: |
+          import cfnresponse
+          import boto3
+          import json
+          def handler(event, context):
+              response_data = {}
+              try:
+                print(json.dumps(event))
+                if event['RequestType'] == 'Delete':
+                    s3 = boto3.resource('s3')
+                    bucket = s3.Bucket(event['ResourceProperties']['BucketName'])
+                    bucket.objects.all().delete()
+                    response_data['Message'] = "Resource deletion successful!"
+                else:
+                    response_data['Message'] = "Nothing to do"
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+              except Exception as e:
+                print(str(e))
+                cfnresponse.send(event, context, cfnresponse.FAILED, response_data)
